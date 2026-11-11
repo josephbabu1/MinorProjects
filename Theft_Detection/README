@@ -1,1 +1,126 @@
+# Theft Detection System
 
+We built this for our ARM Architecture, Programming and Interfacing course (PEECT525) at GEC Thrissur. It's a small alarm that goes off when someone moves the thing it's attached to. An MPU6050 accelerometer feeds an STM32 Nucleo-G070RB, and if the board gets moved, a buzzer sounds, a red LED lights up and the OLED says ALERT.
+
+It's a learning project, not a real security product. Please don't rely on it to guard your laptop.
+
+## How it works
+
+When you power it up, the board needs to sit still for about two seconds. During that time it takes 100 accelerometer readings and averages them, which gives it a "this is what resting looks like" baseline. We do this because a sensor at rest doesn't read zero. It reads gravity plus a small offset that depends on how it's mounted.
+
+After calibration it shows `DISARMED`. Press the blue button (B1) and it arms: the green LED comes on and the OLED shows `ARMED`. From then on it reads the sensor every 20 ms and checks how far the current reading is from the baseline:
+
+```
+Δ = √((ax − bx)² + (ay − by)² + (az − bz)²)
+```
+
+If Δ goes above 0.15 g, the buzzer and red LED turn on and the OLED shows `ALERT`. Press B1 again to shut it up and disarm.
+
+We compare the whole vector instead of just the total magnitude because tilting the board barely changes the magnitude (it stays near 1 g) but does change which axes gravity falls on. This way lifting, tilting, shaking and dragging all get caught.
+
+For the threshold, we measured the resting noise and Δ never went above 0.02 g, so 0.15 g leaves plenty of room before false alarms while still catching small movements.
+
+| State | OLED | Green LED | Red LED | Buzzer |
+|---|---|---|---|---|
+| Calibrating | CALIBRATING | off | off | off |
+| Disarmed | DISARMED | off | off | off |
+| Armed, still | ARMED | on | off | off |
+| Armed, moved | ALERT | on | on | on |
+
+## What you need
+
+- STM32 Nucleo-G070RB
+- MPU6050 module
+- 0.96" SSD1306 OLED (128×64, I²C)
+- Active buzzer
+- Red LED and a 220 Ω resistor
+- Perfboard, header sockets, jumper wires, USB cable
+
+The button (B1) and the green LED (LD4) are already on the Nucleo, so there's nothing extra to wire for those.
+
+## Wiring
+
+The MPU6050 and the OLED share one I²C bus. The MPU6050 sits at 0x68 (AD0 tied to GND) and the OLED at 0x3C.
+
+| Part | Pin | Nucleo pin |
+|---|---|---|
+| MPU6050 and OLED | VCC / GND | 3V3 / GND |
+| MPU6050 and OLED | SCL | PA9 |
+| MPU6050 and OLED | SDA | PA10 |
+| MPU6050 | AD0 | GND |
+| Active buzzer | + / − | PA8 / GND |
+| Red LED | anode (through 220 Ω) / cathode | PC7 / GND |
+| Green LED (on-board) | LD4 | PA5 |
+| Button B1 (on-board) | B1 | PC13 |
+
+## Setting it up
+
+You'll need STM32CubeIDE, and we used the [stm32-ssd1306](https://github.com/afiskon/stm32-ssd1306) library for the display.
+
+**In CubeMX:**
+- I2C1 in Fast Mode (400 kHz), SCL on PA9, SDA on PA10
+- PA8 as GPIO output, labelled `BUZZER`
+- PC7 as GPIO output, labelled `LED_RED`
+- PA5 as GPIO output, labelled `LED_GREEN`
+- PC13 as GPIO input with no pull, labelled `B1`. CubeMX defaults this pin to `SYS_WKUP2`, so change it.
+
+**Adding the OLED library:**
+1. Copy its source and header files into `Core/Src` and `Core/Inc`.
+2. Rename `ssd1306_conf_template.h` to `ssd1306_conf.h`.
+3. Open that file and set the family to STM32G0. It defaults to F0, which gives a confusing `stm32f0xx_hal.h not found` error.
+
+**Build and flash:** put the code from `main.c` into the `USER CODE` sections CubeMX generated, build, and flash over the on-board ST-LINK. Keep the board still while it says CALIBRATING, then press B1.
+
+If you want to change how sensitive it is, the settings are at the top of `main.c`:
+
+```c
+#define MPU_ADDR     (0x68 << 1)      /* HAL wants the 7-bit address shifted left */
+#define THRESHOLD_G  0.15f            /* movement threshold in g */
+#define BTN_PRESSED  GPIO_PIN_RESET   /* B1 reads LOW when pressed */
+```
+
+## Problems we ran into
+
+Some of these cost us a while, so here they are in case you hit them too:
+
+- **`ssd1306_conf.h` not found.** The library ships it as `ssd1306_conf_template.h`. Rename it.
+- **`stm32f0xx_hal.h` not found.** The library assumes the F0 family. Switch it to G0 in the conf file.
+- **The alarm never triggered and the system looked frozen.** We had the button polarity backwards. On this board B1 reads 1 when idle and 0 when pressed, so `BTN_PRESSED` has to be `GPIO_PIN_RESET`.
+- **PC13 wouldn't act like a normal button.** It was still set to `SYS_WKUP2`. Set it to `GPIO_Input`.
+- **Clash on PA9.** We'd first put the red LED there, but PA9 is the I²C1 clock. The LED moved to PC7.
+- **`sprintf` printed nothing for floats while testing.** newlib-nano doesn't support `%f` by default. We printed values multiplied by 100 as integers instead.
+
+## Limitations
+
+It's a prototype, and it shows in a few places:
+
+- It only calibrates at power-up, so if you move the board afterwards, it'll alarm.
+- The threshold is fixed, and a different environment might need a different value.
+- The button is polled with no debouncing.
+- The alarm is local only, so nothing is sent to your phone.
+
+## Ideas for later
+
+- A beeping pattern instead of a constant tone, and a delay after arming so you can walk away
+- Re-calibrating automatically at the moment you arm it
+- Interrupt-driven or debounced button input
+- Using the MPU6050's built-in low-pass filter and motion interrupt for less noise and lower power
+- Wireless alerts over GSM, Wi-Fi or Bluetooth
+- Disarming with a PIN, RFID tag or phone app
+
+## Photos
+
+[Add photos of the prototype and the OLED states here]
+
+## Team
+
+- Edgar Savio Joseph (TCR24EC066)
+- Joseph Babu (TCR24EC078)
+- Milan Shiju Chakola (TCR24EC092)
+- Nitin Baiju (TCR24EC106)
+
+Guided by Prof. Sojan Francis P, Dept. of ECE, Government Engineering College Thrissur (APJ Abdul Kalam Technological University).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
