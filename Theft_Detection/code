@@ -1,0 +1,96 @@
+
+#include <math.h>
+#include <stdint.h>
+#include "ssd1306.h"
+#include "ssd1306_fonts.h"
+#define MPU_ADDR     (0x68 << 1)      /* HAL needs 7-bit address << 1 */
+#define THRESHOLD_G  0.15f            /* movement threshold in g */
+#define BTN_PRESSED  GPIO_PIN_RESET   /* B1 reads LOW when pressed */
+void MPU_Init(void)
+{
+  uint8_t d = 0x00;
+
+  /* wake up the sensor */
+  HAL_I2C_Mem_Write(&hi2c1, MPU_ADDR, 0x6B, I2C_MEMADD_SIZE_8BIT, &d, 1, 100);
+
+  /* accelerometer range = +/-2 g */
+  HAL_I2C_Mem_Write(&hi2c1, MPU_ADDR, 0x1C, I2C_MEMADD_SIZE_8BIT, &d, 1, 100);
+
+  HAL_Delay(100);
+}
+
+void MPU_Read(float *x, float *y, float *z)
+{
+  uint8_t b[6];
+  HAL_I2C_Mem_Read(&hi2c1, MPU_ADDR, 0x3B, I2C_MEMADD_SIZE_8BIT, b, 6, 100);
+  *x = (int16_t)((b[0] << 8) | b[1]) / 16384.0f;
+  *y = (int16_t)((b[2] << 8) | b[3]) / 16384.0f;
+  *z = (int16_t)((b[4] << 8) | b[5]) / 16384.0f;
+}
+
+void Show(const char *text)
+{
+  ssd1306_Fill(Black);
+  ssd1306_SetCursor(4, 22);
+  ssd1306_WriteString((char *)text, Font_11x18, White);
+  ssd1306_UpdateScreen();
+}
+
+int main(void)
+{
+  float bx, by, bz;
+  float x, y, z;
+  uint8_t armed = 0;
+  uint8_t alarm = 0;
+
+  ssd1306_Init();
+  MPU_Init();
+
+  /* Start-up calibration */
+  Show("CALIBRATING");
+  float sx = 0, sy = 0, sz = 0;
+  for (int i = 0; i < 100; i++)
+  {
+    MPU_Read(&x, &y, &z);
+    sx += x; sy += y; sz += z;
+    HAL_Delay(20);
+  }
+  bx = sx / 100; by = sy / 100; bz = sz / 100;
+
+  Show("DISARMED");
+  while (1)
+  {
+
+    /* Button: toggle arm / disarm */
+    if (HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == BTN_PRESSED)
+    {
+      armed = !armed;
+      alarm = 0;
+      HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin, armed);
+      Show(armed ? "ARMED" : "DISARMED");
+
+      /* wait until the button is released */
+      while (HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == BTN_PRESSED);
+    }
+
+    /* Motion check */
+    if (armed && !alarm)
+    {
+      MPU_Read(&x, &y, &z);
+      float dx = x - bx, dy = y - by, dz = z - bz;
+
+      if (sqrtf(dx*dx + dy*dy + dz*dz) > THRESHOLD_G)
+      {
+        alarm = 1;
+        HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_SET);
+        Show("ALERT");
+      }
+    }
+    HAL_Delay(20);
+
+    /* USER CODE END 3 */
+  }
+}
